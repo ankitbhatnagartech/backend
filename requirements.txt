@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+motor
+redis
+pydantic
+python-multipart
+jinja2
+weasyprint
+apscheduler
+httpx
