@@ -1,5 +1,5 @@
 from enum import Enum
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from typing import Dict, Optional, List
 
 class ArchitectureType(str, Enum):
@@ -7,30 +7,6 @@ class ArchitectureType(str, Enum):
     MICROSERVICES = "microservices"
     SERVERLESS = "serverless"
     HYBRID = "hybrid"
-
-class CloudProvider(str, Enum):
-    """Supported cloud providers (17 total)"""
-    # Major Global
-    AWS = "AWS"
-    AZURE = "Azure"
-    GCP = "GCP"
-    ORACLE = "Oracle Cloud"
-    IBM = "IBM Cloud"
-    # Developer-Focused
-    DIGITALOCEAN = "DigitalOcean"
-    LINODE = "Linode"
-    VULTR = "Vultr"
-    HETZNER = "Hetzner"
-    # Indian Providers
-    TATA_IZO = "Tata IZO"
-    CTRLS = "CtrlS"
-    NETMAGIC = "Netmagic"
-    YOTTA = "Yotta"
-    # Regional/Specialized
-    ALIBABA = "Alibaba Cloud"
-    OVH = "OVHcloud"
-    SCALEWAY = "Scaleway"
-    VERCEL = "Vercel"
 
 class DatabaseConfig(BaseModel):
     type: str = Field(default="rds", description="Database type: rds, dynamodb, firestore")
@@ -101,76 +77,6 @@ class TrafficInput(BaseModel):
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig, description="Monitoring configuration")
     cicd: CICDConfig = Field(default_factory=CICDConfig, description="CI/CD configuration")
     multi_region: MultiRegionConfig = Field(default_factory=MultiRegionConfig, description="Multi-region configuration")
-    
-    @field_validator('daily_active_users')
-    @classmethod
-    def validate_dau(cls, v):
-        """Validate daily active users - cap at 1 billion to prevent overflow"""
-        if v > 1_000_000_000:
-            raise ValueError("Daily Active Users cannot exceed 1 billion. If you have more users, contact enterprise support.")
-        if v < 1:
-            raise ValueError("Daily Active Users must be at least 1")
-        return v
-    
-    @field_validator('api_requests_per_user')
-    @classmethod
-    def validate_requests(cls, v):
-        """Validate API requests per user - must be reasonable"""
-        if v < 0:
-            raise ValueError("API requests per user cannot be negative")
-        if v > 1_000_000:
-            raise ValueError("API requests per user cannot exceed 1,000,000. Please verify your input.")
-        return max(0, v)
-    
-    @field_validator('storage_per_user_mb')
-    @classmethod
-    def validate_storage(cls, v):
-        """Validate storage per user - must be non-negative"""
-        if v < 0:
-            raise ValueError("Storage per user cannot be negative")
-        if v > 1_000_000:  # 1TB per user max
-            raise ValueError("Storage per user cannot exceed 1,000,000 MB (1TB)")
-        return max(0.0, v)
-    
-    @field_validator('peak_traffic_multiplier')
-    @classmethod
-    def validate_multiplier(cls, v):
-        """Validate peak traffic multiplier - should be between 1.0 and 10.0"""
-        if v < 1.0:
-            raise ValueError("Peak traffic multiplier must be at least 1.0")
-        if v > 10.0:
-            raise ValueError("Peak traffic multiplier cannot exceed 10.0")
-        return v
-    
-    @field_validator('growth_rate_yoy')
-    @classmethod
-    def validate_growth(cls, v):
-        """Validate YoY growth rate - must be between -100% and 1000%"""
-        if v < -1.0:
-            raise ValueError("Growth rate cannot be less than -100%")
-        if v > 10.0:
-            raise ValueError("Growth rate cannot exceed 1000% (10.0)")
-        return v
-    
-    @field_validator('revenue_per_user_monthly')
-    @classmethod
-    def validate_revenue(cls, v):
-        """Validate revenue per user - cannot be negative"""
-        if v < 0:
-            raise ValueError("Revenue per user cannot be negative")
-        if v > 1_000_000:
-            raise ValueError("Revenue per user cannot exceed $1,000,000")
-        return max(0.0, v)
-    
-    @field_validator('funding_available')
-    @classmethod
-    def validate_funding(cls, v):
-        """Validate funding - cannot be negative"""
-        if v < 0:
-            raise ValueError("Funding available cannot be negative")
-        if v > 1_000_000_000:  # $1B cap
-            raise ValueError("Funding cannot exceed $1,000,000,000")
-        return max(0.0, v)
 
 class CostComponent(BaseModel):
     compute: float
@@ -196,12 +102,3 @@ class EstimationResult(BaseModel):
     scaling_scenarios: Dict[str, float] = {}  # "10k Users": 500, "100k Users": 4000, ...
     optimization_suggestions: List[Dict[str, str]] = []  # [{"title": "Reserved Instances", "saving": "$200", "description": "..."}]
     business_metrics: Dict[str, str] = {}  # "Cost per User": "$0.05", "Runway": "12 months"
-
-class FilterConfig(BaseModel):
-    """Saved filter configuration for URL sharing"""
-    filter_id: Optional[str] = None
-    name: str = "My Configuration"
-    cloud_provider: str = "AWS"
-    architecture: ArchitectureType = ArchitectureType.MONOLITH
-    traffic_input: TrafficInput
-    created_at: Optional[str] = None

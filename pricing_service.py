@@ -18,9 +18,14 @@ class PricingService:
             "fargate_vcpu": 29.0 # ~$0.04/vCPU/hr
         },
         "database": {
-            "rds_db.t3.micro": 12.0, # Instance + Storage
+            "rds_db.t3.micro": 30.0, # Updated 2025: Instance + Storage (~$0.041/hr + storage)
             "rds_db.t3.medium": 60.0, # ~$0.082/hr
-            "dynamodb_unit": 0.25 # WCU/RCU blended estimate
+            "rds_db.t3.large": 121.0,
+            "dynamodb_unit": 0.25, # WCU/RCU blended estimate
+            "firestore_read_1m": 0.06,
+            "firestore_write_1m": 0.18,
+            "read_replica": 55.0, # Additional cost per replica
+            "backup_gb": 0.095 # Backup storage
         },
         "storage": {
             "s3_gb": 0.023,
@@ -29,6 +34,70 @@ class PricingService:
         "networking": {
             "load_balancer": 16.20, # ALB minimum ~$0.0225/hr
             "data_transfer_gb": 0.09
+        },
+        "cache": {
+            "redis_t4g_micro": 11.0,
+            "redis_t4g_small": 24.0,
+            "redis_t4g_medium": 48.0,
+            "memcached_t4g_micro": 10.0,
+            "memcached_t4g_small": 22.0
+        },
+        "cdn": {
+            "cloudfront_gb": 0.085,
+            "cloudfront_edge_function_1m": 0.60,
+            "cloudflare_gb": 0.01,
+            "cloudflare_workers_1m": 0.50,
+            "akamai_gb": 0.12,
+            "video_streaming_multiplier": 1.5
+        },
+        "messaging": {
+            "sqs_1m_requests": 0.40,
+            "sns_1m_notifications": 0.50,
+            "kafka_broker": 400.0, # Updated 2025: AWS MSK m5.large broker
+            "rabbitmq_m5_large": 140.0,
+            "kinesis_shard": 18.0,
+            "eventbridge_1m_events": 1.00
+        },
+        "security": {
+            "waf_rule": 1.0,
+            "waf_request_1m": 0.60,
+            "vpn_connection": 36.50,
+            "shield_advanced": 3000.0,
+            "acm_certificate": 0.0,  # Free
+            "secrets_manager_secret": 0.40,
+            "secrets_api_call_10k": 0.05,
+            "soc2_audit_monthly": 1250.0,  # $15k/year amortized
+            "iso27001_monthly": 1667.0,  # $20k/year amortized
+            "hipaa_monthly": 2083.0,  # $25k/year amortized
+            "pci_dss_monthly": 1500.0  # $18k/year amortized
+        },
+        "monitoring": {
+            "cloudwatch_metric": 0.30,
+            "cloudwatch_log_gb": 0.50,
+            "cloudwatch_dashboard": 3.0,
+            "datadog_host": 15.0,
+            "datadog_log_gb": 1.70,
+            "newrelic_host": 10.0,
+            "newrelic_apm_host": 99.0,
+            "xray_trace_1m": 5.0,
+            "xray_retrieved_1m": 0.50,
+            "alert_channel": 0.0  # Usually free
+        },
+        "cicd": {
+            "github_actions_linux_minute": 0.008,
+            "github_actions_windows_minute": 0.016,
+            "gitlab_ci_minute": 0.01,
+            "jenkins_m5_large": 140.0,
+            "ecr_storage_gb": 0.10,
+            "acr_storage_gb": 0.167,
+            "docker_hub_team": 7.0,
+            "code_scanning_user": 21.0,
+            "artifact_storage_gb": 0.25
+        },
+        "replication": {
+            "cross_region_gb": 0.02,
+            "vpc_peering_gb": 0.01,
+            "region_multiplier": 0.85  # Additional regions cost ~85% of primary
         }
     }
 
@@ -38,26 +107,41 @@ class PricingService:
         from database import get_database
         
         try:
+            logger.info("Attempting to load dynamic pricing from database...")
             db = await get_database()
             if db is not None:
                 data = await db.pricing.find_one({"_id": "latest_pricing"})
                 if data:
                     # Update PRICING dict with loaded data
+                    categories_updated = []
                     for category, items in data.items():
                         if category in cls.PRICING and isinstance(items, dict):
                             cls.PRICING[category].update(items)
+                            categories_updated.append(category)
                         elif category == "multi_cloud":
+                            logger.info(f"Loading multi_cloud multipliers from DB: {items}")
                             cls.CLOUD_MULTIPLIERS.update(items)
+                            categories_updated.append("multi_cloud")
+                            logger.info(f"CLOUD_MULTIPLIERS after update: {cls.CLOUD_MULTIPLIERS}")
                         elif category == "currency_rates":
                             cls.CURRENCY_RATES.update(items)
+                            categories_updated.append("currency_rates")
                             
-                    logger.info(f"Loaded dynamic pricing from MongoDB (Source: {data.get('meta', {}).get('sources')})")
+                    meta = data.get('meta', {})
+                    logger.info(f"✅ Loaded dynamic pricing from MongoDB")
+                    logger.info(f"   Source: {meta.get('sources', 'Unknown')}")
+                    logger.info(f"   Last Updated: {meta.get('last_updated', 'Unknown')}")
+                    logger.info(f"   Categories Updated: {categories_updated}")
                 else:
-                    logger.info("No pricing data found in MongoDB, using defaults.")
+                    logger.warning("❌ No pricing data found in MongoDB, using defaults.")
             else:
-                logger.warning("Database not available, using defaults.")
+                logger.warning("❌ Database not available, using default pricing.")
         except Exception as e:
-            logger.error(f"Failed to load dynamic pricing from DB: {e}")
+            logger.error(f"❌ Failed to load dynamic pricing from DB: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+
 
     CURRENCY_RATES = {
         # Americas
@@ -177,13 +261,32 @@ class PricingService:
         "KES": "KSh"
     }
 
-    # Multipliers relative to AWS (Simplified for MVP)
+    # Multipliers relative to AWS (Extended to 17 providers)
     CLOUD_MULTIPLIERS = {
+        # Major Global
         "AWS": 1.0,
-        "Azure": 1.05, # Slightly more expensive generally
-        "GCP": 0.95,   # Sustained use discounts often make it cheaper
-        "DigitalOcean": 0.60, # Much cheaper for compute/bandwidth
-        "Vercel": 1.20 # Premium for managed experience (Frontend/Serverless)
+        "Azure": 1.05,  # Slightly premium for enterprise features
+        "GCP": 0.95,    # Sustained use discounts
+        "Oracle Cloud": 0.90,  # Competitive enterprise pricing
+        "IBM Cloud": 1.10,  # Premium for enterprise/mainframe
+        
+        # Developer-Focused
+        "DigitalOcean": 0.60,  # Simple, developer-friendly
+        "Linode": 0.65,  # Predictable pricing
+        "Vultr": 0.62,  # Aggressive pricing
+        "Hetzner": 0.50,  # Very cost-effective
+        
+        # Indian Providers
+        "Tata IZO": 0.85,  # Competitive in Indian market
+        "CtrlS": 0.80,  # Cost-effective Indian option
+        "Netmagic": 0.90,  # Managed services premium  
+        "Yotta": 0.75,  # Competitive hyperscale pricing
+        
+        # Regional/Specialized
+        "Alibaba Cloud": 0.70,  # Competitive in APAC
+        "OVHcloud": 0.55,  # European value leader
+        "Scaleway": 0.58,  # Competitive European pricing
+        "Vercel": 1.25  # Premium for managed edge/serverless
     }
 
     @staticmethod

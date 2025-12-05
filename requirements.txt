@@ -8,3 +8,7 @@ jinja2
 weasyprint
 apscheduler
 httpx
+# Add to requirements.txt
+python-jose[cryptography]
+passlib[bcrypt]
+slowapi
