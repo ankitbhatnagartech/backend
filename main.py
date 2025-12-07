@@ -1,8 +1,9 @@
-from fastapi import FastAPI, Body, HTTPException, Depends, Request
+from fastapi import FastAPI, Body, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from contextlib import asynccontextmanager
+import os
 import logging
 import json
 from datetime import datetime, timedelta
@@ -49,25 +50,33 @@ scheduler = AsyncIOScheduler()
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting up ArchCost API...")
-    
-    # Connect to Database
-    Database.connect()
-    
-    # Create indexes for optimal performance
-    await Database.create_indexes()
-    
-    # Load existing dynamic prices
-    await PricingService.load_dynamic_prices()
-    
-    # Start scheduler
-    scheduler.add_job(PricingFetcher.fetch_latest_prices, 'cron', hour=0, minute=0) # Run at midnight
-    scheduler.start()
-    logger.info("Scheduler started. Price fetch job scheduled for 00:00 daily.")
+    # Optionally skip DB and scheduler startup for local/testing if SKIP_STARTUP_DB=true
+    skip_startup = os.getenv("SKIP_STARTUP_DB", "false").lower() == "true"
+    if not skip_startup:
+        # Connect to Database
+        Database.connect()
+
+        # Create indexes for optimal performance
+        await Database.create_indexes()
+
+        # Load existing dynamic prices
+        await PricingService.load_dynamic_prices()
+
+        # Start scheduler
+        scheduler.add_job(PricingFetcher.fetch_latest_prices, 'cron', hour=0, minute=0) # Run at midnight
+        scheduler.start()
+        logger.info("Scheduler started. Price fetch job scheduled for 00:00 daily.")
+    else:
+        logger.info("SKIP_STARTUP_DB=true — skipping Database and scheduler startup for local/testing")
     
     yield
     
     # Shutdown
-    scheduler.shutdown()
+    try:
+        scheduler.shutdown()
+    except Exception:
+        # Scheduler may not have been started (e.g., SKIP_STARTUP_DB=true)
+        logger.info("Scheduler was not running at shutdown; skipping scheduler.shutdown()")
     Database.close()
     logger.info("Scheduler and Database connection shut down.")
 
@@ -129,13 +138,9 @@ async def estimate_cost(
         
         # Convert traffic dict to TrafficInput object
         traffic = TrafficInput(**traffic_dict)
-        
-        logger.info(f"Estimating cost for {architecture} with {traffic.daily_active_users} DAU")
-        result = EstimationService.estimate(architecture, traffic, currency)
-        logger.info(f"Estimation completed successfully. Total cost: {result.monthly_cost.total}")
-        
-        # Generate comprehensive cache key including ALL traffic parameters
-        # This ensures different inputs produce different cache keys
+
+        # Generate comprehensive cache key including ALL traffic parameters BEFORE heavy compute
+        # This ensures different inputs produce different cache keys and allows conditional responses
         import json
         cache_key_dict = {
             'architecture': architecture,
@@ -157,19 +162,37 @@ async def estimate_cost(
         }
         cache_key = json.dumps(cache_key_dict, sort_keys=True)
         etag = hashlib.md5(cache_key.encode()).hexdigest()
-        
-        # Set response headers for caching
-        # Use no-cache to prevent aggressive browser caching with incomplete keys
-        # Browsers must validate with server before using cached version
+
+        # If client provided If-None-Match header and it matches, return 304 Not Modified
+        client_etag = request.headers.get('if-none-match')
+        if client_etag:
+            # strip optional quotes
+            client_etag_clean = client_etag.strip('"')
+            if client_etag_clean == etag:
+                logger.info("ETag matches client If-None-Match; returning 304")
+                # Return minimal 304 response with ETag so client can reuse cached body
+                return Response(status_code=304, headers={
+                    'ETag': f'"{etag}"',
+                    'Cache-Control': 'no-store',
+                    'Vary': 'Accept-Encoding, Content-Type, Accept'
+                })
+
+        # Perform estimation (expensive) only when needed
+        logger.info(f"Estimating cost for {architecture} with {traffic.daily_active_users} DAU")
+        result = EstimationService.estimate(architecture, traffic, currency)
+        logger.info(f"Estimation completed successfully. Total cost: {result.monthly_cost.total}")
+
+        # Set response headers for caching and cache-busting
         from fastapi.responses import JSONResponse
         response = JSONResponse(content=result.model_dump())
-        response.headers["Cache-Control"] = "private, no-cache, must-revalidate, max-age=0"
+        # Use no-store to avoid intermediate caches storing potentially stale dynamic results
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         response.headers["ETag"] = f'"{etag}"'
         response.headers["Vary"] = "Accept-Encoding, Content-Type, Accept"
         response.headers["X-Cache-Key"] = etag
-        
+
         return response
     except ValueError as ve:
         logger.error(f"Validation error: {ve}", exc_info=True)

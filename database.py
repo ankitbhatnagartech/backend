@@ -38,7 +38,7 @@ class Database:
         """Create database indexes for optimal query performance"""
         try:
             db = cls.get_db()
-            if not db:
+            if db is None:
                 logger.warning("Database not connected, skipping index creation")
                 return False
             
