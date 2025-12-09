@@ -253,7 +253,7 @@ async def admin_portal():
                 errorEl.style.display = 'none';
                 
                 try {
-                    const response = await fetch('/admin/login', {
+                    const response = await fetch('/api/admin/login', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ username, password })
@@ -262,7 +262,7 @@ async def admin_portal():
                     if (response.ok) {
                         const data = await response.json();
                         localStorage.setItem('admin_token', data.access_token);
-                        window.location.href = '/admin/dashboard-ui';
+                        window.location.href = '/api/admin/dashboard-ui';
                     } else {
                         errorEl.textContent = 'Invalid credentials';
                         errorEl.style.display = 'block';
@@ -288,7 +288,7 @@ async def admin_dashboard_ui():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>ArchCost Admin Dashboard</title>
+        <title>ArchCostEstimator Admin Dashboard</title>
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
@@ -358,18 +358,18 @@ async def admin_dashboard_ui():
         <script>
             const token = localStorage.getItem('admin_token');
             if (!token) {
-                window.location.href = '/admin';
+                window.location.href = '/api/admin';
             }
             
             async function loadDashboard() {
                 try {
-                    const response = await fetch('/admin/dashboard', {
+                    const response = await fetch('/api/admin/dashboard', {
                         headers: { 'Authorization': 'Bearer ' + token }
                     });
                     
                     if (!response.ok) {
                         if (response.status === 401) {
-                            window.location.href = '/admin';
+                            window.location.href = '/api/admin';
                         }
                         throw new Error('Failed to load dashboard');
                     }
@@ -406,7 +406,7 @@ async def admin_dashboard_ui():
                 btn.textContent = '🔄 Refreshing...';
                 
                 try {
-                    const response = await fetch('/admin/refresh-prices', {
+                    const response = await fetch('/api/admin/refresh-prices', {
                         method: 'POST',
                         headers: { 'Authorization': 'Bearer ' + token }
                     });
@@ -427,7 +427,7 @@ async def admin_dashboard_ui():
             
             function logout() {
                 localStorage.removeItem('admin_token');
-                window.location.href = '/admin';
+                window.location.href = '/api/admin';
             }
             
             function showError(msg) {
