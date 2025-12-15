@@ -51,12 +51,9 @@ class EmailService:
             
             msg.attach(MIMEText(body, 'plain'))
 
-            logger.info(f"Connecting to SMTP server {cls.SMTP_SERVER}...")
-            # Added timeout to prevent hanging regarding of firewall rules
-            server = smtplib.SMTP(cls.SMTP_SERVER, cls.SMTP_PORT, timeout=10)
-            
-            logger.info("Starting TLS...")
-            server.starttls()
+            logger.info(f"Connecting to SMTP server {cls.SMTP_SERVER} on Port 465 (SSL)...")
+            # Use SMTP_SSL for port 465
+            server = smtplib.SMTP_SSL(cls.SMTP_SERVER, 465, timeout=10)
             
             logger.info(f"Logging in as {cls.SENDER_EMAIL}...")
             server.login(cls.SENDER_EMAIL, cls.SENDER_PASSWORD)
