@@ -52,14 +52,22 @@ class EmailService:
             msg.attach(MIMEText(body, 'plain'))
 
             logger.info(f"Connecting to SMTP server {cls.SMTP_SERVER}...")
-            server = smtplib.SMTP(cls.SMTP_SERVER, cls.SMTP_PORT)
+            # Added timeout to prevent hanging regarding of firewall rules
+            server = smtplib.SMTP(cls.SMTP_SERVER, cls.SMTP_PORT, timeout=10)
+            
+            logger.info("Starting TLS...")
             server.starttls()
+            
+            logger.info(f"Logging in as {cls.SENDER_EMAIL}...")
             server.login(cls.SENDER_EMAIL, cls.SENDER_PASSWORD)
+            
+            logger.info("Sending mail...")
             text = msg.as_string()
             server.sendmail(cls.SENDER_EMAIL, cls.SENDER_EMAIL, text)
+            
             server.quit()
             logger.info(f"✅ Email sent successfully to {cls.SENDER_EMAIL}")
             return True
         except Exception as e:
-            logger.error(f"❌ Error sending email: {e}")
+            logger.error(f"❌ Error sending email: {e}", exc_info=True)
             return False
