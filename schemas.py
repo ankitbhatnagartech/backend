@@ -205,3 +205,10 @@ class FilterConfig(BaseModel):
     architecture: ArchitectureType = ArchitectureType.MONOLITH
     traffic_input: TrafficInput
     created_at: Optional[str] = None
+    
+class ContactSubmission(BaseModel):
+    name: str = Field(..., min_length=2, max_length=100)
+    email: str = Field(..., pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+    subject: str = Field(..., min_length=5, max_length=200)
+    message: str = Field(..., min_length=10, max_length=2000)
+    created_at: Optional[str] = None

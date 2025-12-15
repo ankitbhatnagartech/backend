@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Body, HTTPException, Depends, Request, Response
+from fastapi import FastAPI, Body, HTTPException, Depends, Request, Response, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -11,13 +11,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 import hashlib
 
-from schemas import TrafficInput, ArchitectureType, EstimationResult
+from schemas import TrafficInput, ArchitectureType, EstimationResult, ContactSubmission
 from estimation_service import EstimationService
 from pricing_service import PricingService
 from database import Database
 from pricing_fetcher import PricingFetcher
 from security import verify_admin_token, authenticate_admin
 from rate_limiter import limiter, RATE_LIMITS
+from email_service import EmailService
 
 # Setup structured JSON logging
 class JsonFormatter(logging.Formatter):
@@ -197,9 +198,35 @@ async def estimate_cost(
     except ValueError as ve:
         logger.error(f"Validation error: {ve}", exc_info=True)
         raise HTTPException(status_code=422, detail=f"Validation error: {str(ve)}")
-    except Exception as e:
         logger.error(f"Error during estimation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during estimation: {str(e)}")
+
+@app.post("/contact")
+@limiter.limit("5/hour")
+async def submit_contact_form(
+    request: Request,
+    submission: ContactSubmission,
+    background_tasks: BackgroundTasks = None
+):
+    """Submit contact form - saves to DB and triggers email"""
+    try:
+        # Save to Database
+        db = Database.get_db()
+        if db is not None:
+            doc = submission.model_dump()
+            doc["created_at"] = datetime.utcnow().isoformat()
+            await db.contact_messages.insert_one(doc)
+            logger.info(f"Contact message saved from {submission.email}")
+        
+        # Trigger Email Notification
+        # If background_tasks is available (FastAPI dependency), use it. 
+        # But we didn't import it in signature yet. Let's send directly via await for now since EmailService puts it in thread.
+        await EmailService.send_contact_notification(submission.model_dump())
+        
+        return {"status": "success", "message": "Message received"}
+    except Exception as e:
+        logger.error(f"Error submitting contact form: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to submit message")
 
 @app.get("/admin")
 async def admin_portal():
@@ -299,7 +326,7 @@ async def admin_dashboard_ui():
             .logout-btn:hover { background: #b71c1c; }
             .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px; }
             .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-            .card h2 { color: #667eea; font-size: 16px; margin-bottom: 15px; }
+            .card h2 { color: #667eea; font-size: 16px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
             .card-content { font-size: 14px; line-height: 1.6; color: #555; }
             .stat { margin-bottom: 10px; display: flex; justify-content: space-between; }
             .stat-label { color: #999; }
@@ -312,6 +339,17 @@ async def admin_dashboard_ui():
             .loading { display: none; text-align: center; padding: 20px; }
             .error-message { background: #ffebee; border: 1px solid #ef5350; color: #d32f2f; padding: 15px; border-radius: 5px; margin-bottom: 20px; display: none; }
             .success-message { background: #e8f5e9; border: 1px solid #81c784; color: #2e7d32; padding: 15px; border-radius: 5px; margin-bottom: 20px; display: none; }
+            
+            /* Messages Table */
+            .messages-container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; font-size: 14px; }
+            th { color: #667eea; font-weight: 600; background: #f9f9f9; }
+            tr:hover { background: #f5f5f5; }
+            .message-date { color: #999; font-size: 12px; white-space: nowrap; }
+            .message-subject { font-weight: 500; color: #333; }
+            .message-preview { color: #666; max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .empty-state { text-align: center; padding: 40px; color: #999; }
         </style>
     </head>
     <body>
@@ -353,6 +391,14 @@ async def admin_dashboard_ui():
                     </div>
                 </div>
             </div>
+
+            <!-- Messages Section -->
+            <div class="messages-container">
+                <h2>📬 Recent Contact Messages</h2>
+                <div id="messagesTableContainer">
+                    <p class="empty-state">Loading messages...</p>
+                </div>
+            </div>
         </div>
         
         <script>
@@ -376,9 +422,76 @@ async def admin_dashboard_ui():
                     
                     const data = await response.json();
                     updateUI(data);
+                    
+                    // Load messages separately
+                    loadMessages();
                 } catch (err) {
                     showError('Error loading dashboard: ' + err.message);
                 }
+            }
+            
+            async function loadMessages() {
+                try {
+                    const response = await fetch('/api/admin/messages', {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        renderMessages(data.messages);
+                    }
+                } catch (err) {
+                    console.error('Error loading messages', err);
+                }
+            }
+
+            function renderMessages(messages) {
+                const container = document.getElementById('messagesTableContainer');
+                if (!messages || messages.length === 0) {
+                    container.innerHTML = '<p class="empty-state">No messages received yet.</p>';
+                    return;
+                }
+
+                let html = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Sender</th>
+                                <th>Subject</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+
+                messages.forEach(msg => {
+                    const date = new Date(msg.created_at).toLocaleString();
+                    html += `
+                        <tr>
+                            <td class="message-date">${date}</td>
+                            <td>
+                                <strong>${escapeHtml(msg.name)}</strong><br>
+                                <span style="color:#666;font-size:12px">${escapeHtml(msg.email)}</span>
+                            </td>
+                            <td class="message-subject">${escapeHtml(msg.subject)}</td>
+                            <td><div class="message-preview" title="${escapeHtml(msg.message)}">${escapeHtml(msg.message)}</div></td>
+                        </tr>
+                    `;
+                });
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            }
+
+            function escapeHtml(text) {
+                if (!text) return '';
+                return text
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#039;");
             }
             
             function updateUI(data) {
@@ -545,6 +658,28 @@ async def admin_dashboard(request: Request, admin: dict = Depends(verify_admin_t
         return response
     except Exception as e:
         logger.error(f"Error fetching admin dashboard: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/messages")
+@limiter.limit(RATE_LIMITS["admin"])
+async def get_admin_messages(request: Request, admin: dict = Depends(verify_admin_token)):
+    """Fetch contact messages for admin dashboard"""
+    try:
+        db = Database.get_db()
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database not connected")
+        
+        # Get latest 50 messages
+        cursor = db.contact_messages.find().sort("created_at", -1).limit(50)
+        messages = await cursor.to_list(length=50)
+        
+        # Convert ObjectId to string
+        for msg in messages:
+            msg["_id"] = str(msg["_id"])
+            
+        return {"messages": messages}
+    except Exception as e:
+        logger.error(f"Error fetching messages: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/admin/refresh-prices")
