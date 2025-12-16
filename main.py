@@ -279,8 +279,12 @@ async def admin_portal():
                 loadingEl.style.display = 'block';
                 errorEl.style.display = 'none';
                 
+                // Determine API base path
+                const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+                const apiBase = isLocal ? '' : '/api';
+                
                 try {
-                    const response = await fetch('/api/admin/login', {
+                    const response = await fetch(`${apiBase}/admin/login`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ username, password })
@@ -289,7 +293,8 @@ async def admin_portal():
                     if (response.ok) {
                         const data = await response.json();
                         localStorage.setItem('admin_token', data.access_token);
-                        window.location.href = '/api/admin/dashboard-ui';
+                        // Redirect to dashboard UI
+                        window.location.href = `${apiBase}/admin/dashboard-ui`;
                     } else {
                         errorEl.textContent = 'Invalid credentials';
                         errorEl.style.display = 'block';
@@ -403,19 +408,24 @@ async def admin_dashboard_ui():
         
         <script>
             const token = localStorage.getItem('admin_token');
+            
+            // Determine API base path
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const apiBase = isLocal ? '' : '/api';
+
             if (!token) {
-                window.location.href = '/api/admin';
+                window.location.href = `${apiBase}/admin`;
             }
             
             async function loadDashboard() {
                 try {
-                    const response = await fetch('/api/admin/dashboard', {
+                    const response = await fetch(`${apiBase}/admin/dashboard`, {
                         headers: { 'Authorization': 'Bearer ' + token }
                     });
                     
                     if (!response.ok) {
                         if (response.status === 401) {
-                            window.location.href = '/api/admin';
+                            window.location.href = `${apiBase}/admin`;
                         }
                         throw new Error('Failed to load dashboard');
                     }
@@ -432,7 +442,7 @@ async def admin_dashboard_ui():
             
             async function loadMessages() {
                 try {
-                    const response = await fetch('/api/admin/messages', {
+                    const response = await fetch(`${apiBase}/admin/messages`, {
                         headers: { 'Authorization': 'Bearer ' + token }
                     });
                     
@@ -519,7 +529,7 @@ async def admin_dashboard_ui():
                 btn.textContent = '🔄 Refreshing...';
                 
                 try {
-                    const response = await fetch('/api/admin/refresh-prices', {
+                    const response = await fetch(`${apiBase}/admin/refresh-prices`, {
                         method: 'POST',
                         headers: { 'Authorization': 'Bearer ' + token }
                     });
@@ -540,7 +550,7 @@ async def admin_dashboard_ui():
             
             function logout() {
                 localStorage.removeItem('admin_token');
-                window.location.href = '/api/admin';
+                window.location.href = `${apiBase}/admin`;
             }
             
             function showError(msg) {
