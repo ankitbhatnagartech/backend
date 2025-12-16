@@ -20,6 +20,14 @@ from security import verify_admin_token, authenticate_admin
 from rate_limiter import limiter, RATE_LIMITS
 from email_service import EmailService
 
+# Load environment variables from .env file (for local development)
+try:
+    from dotenv import load_dotenv
+    # Load from parent directory .env (since main.py is in backend/)
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
+except ImportError:
+    pass # python-dotenv might not be installed in prod
+
 # Setup structured JSON logging
 class JsonFormatter(logging.Formatter):
     def format(self, record):
@@ -53,22 +61,35 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up ArchCost API...")
     # Optionally skip DB and scheduler startup for local/testing if SKIP_STARTUP_DB=true
     skip_startup = os.getenv("SKIP_STARTUP_DB", "false").lower() == "true"
+    
     if not skip_startup:
-        # Connect to Database
-        Database.connect()
+        # Connect to Database with timeout protection
+        try:
+            # Set a shorter connection timeout for local dev if default localhost logic applies
+            # Motor doesn't block on init, but create_indexes or first query will.
+            # We call connect() which is synchronous in the class but assigns client.
+            Database.connect()
+            
+            # Verify connection (server_selection_timeout defaults to 30s which is too long for dev)
+            # We can't easily change timeout in connect() without changing Database class signature.
+            # But we can try/except the ensure logic.
+            
+            # Create indexes for optimal performance
+            await Database.create_indexes()
 
-        # Create indexes for optimal performance
-        await Database.create_indexes()
+            # Load existing dynamic prices
+            await PricingService.load_dynamic_prices()
 
-        # Load existing dynamic prices
-        await PricingService.load_dynamic_prices()
-
-        # Start scheduler
-        scheduler.add_job(PricingFetcher.fetch_latest_prices, 'cron', hour=0, minute=0) # Run at midnight
-        scheduler.start()
-        logger.info("Scheduler started. Price fetch job scheduled for 00:00 daily.")
+            # Start scheduler
+            scheduler.add_job(PricingFetcher.fetch_latest_prices, 'cron', hour=0, minute=0) # Run at midnight
+            scheduler.start()
+            logger.info("Scheduler started. Price fetch job scheduled for 00:00 daily.")
+        except Exception as e:
+            logger.error(f"Failed to connect to Database or start scheduler: {e}")
+            logger.warning("Continuing app startup without Database. Some features will fail.")
     else:
         logger.info("SKIP_STARTUP_DB=true — skipping Database and scheduler startup for local/testing")
+
     
     yield
     
@@ -211,12 +232,19 @@ async def submit_contact_form(
     """Submit contact form - saves to DB and triggers email"""
     try:
         # Save to Database
-        db = Database.get_db()
-        if db is not None:
-            doc = submission.model_dump()
-            doc["created_at"] = datetime.utcnow().isoformat()
-            await db.contact_messages.insert_one(doc)
-            logger.info(f"Contact message saved from {submission.email}")
+        # Save to Database (Best effort, don't fail request if DB is down locally)
+        try:
+            db = Database.get_db()
+            if db is not None:
+                doc = submission.model_dump()
+                doc["created_at"] = datetime.utcnow().isoformat()
+                await db.contact_messages.insert_one(doc)
+                logger.info(f"Contact message saved from {submission.email}")
+            else:
+                logger.warning("Database unavailable, skipping save for contact message.")
+        except Exception as db_e:
+            logger.error(f"Failed to save contact message to DB: {db_e}")
+            # Continue to send email...
         
         # Trigger Email Notification
         # If background_tasks is available (FastAPI dependency), use it. 
